@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+
+.venv/
+venv/
+
+backup/
+logs/
+*.log
+
+.streamlit/secrets.toml
+.env
+
+output/*_backup_*
+output/backups/
