@@ -55,6 +55,20 @@ BACKTEST_DETAIL_COLUMNS = [
     "hit_3digit",
     "rank_hit",
 ]
+MODEL_ACCURACY_COLUMNS = [
+    "draw_date",
+    "method",
+    "suggested_last2",
+    "suggested_3digit",
+    "created_at",
+    "actual_last2",
+    "actual_3digit",
+    "hit_last2",
+    "hit_3digit",
+    "score",
+    "evaluated_at",
+    "note",
+]
 
 
 def normalize_date(value: str) -> str:
@@ -452,6 +466,37 @@ def read_prediction_history(history_path: Path) -> list[dict[str, str]]:
         return [{column: (row.get(column) or "").strip() for column in PREDICTION_HISTORY_COLUMNS} for row in reader]
 
 
+def ensure_model_accuracy(accuracy_path: Path) -> None:
+    accuracy_path.parent.mkdir(parents=True, exist_ok=True)
+    if accuracy_path.exists():
+        return
+    with accuracy_path.open("w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=MODEL_ACCURACY_COLUMNS, quoting=csv.QUOTE_ALL)
+        writer.writeheader()
+
+
+def read_model_accuracy(accuracy_path: Path) -> list[dict[str, str]]:
+    ensure_model_accuracy(accuracy_path)
+    with accuracy_path.open("r", encoding="utf-8-sig", newline="") as handle:
+        reader = csv.DictReader(handle)
+        missing = [column for column in MODEL_ACCURACY_COLUMNS if column not in (reader.fieldnames or [])]
+        if missing:
+            raise ValueError(f"Missing model accuracy column(s): {', '.join(missing)}")
+        return [{column: (row.get(column) or "").strip() for column in MODEL_ACCURACY_COLUMNS} for row in reader]
+
+
+def write_model_accuracy(accuracy_path: Path, backup_dir: Path, rows: list[dict[str, str]], label: str) -> Path | None:
+    ensure_model_accuracy(accuracy_path)
+    backup_path = backup_file(accuracy_path, backup_dir, label)
+    temp_path = accuracy_path.with_name(f"{accuracy_path.stem}__tmp{accuracy_path.suffix}")
+    with temp_path.open("w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=MODEL_ACCURACY_COLUMNS, quoting=csv.QUOTE_ALL)
+        writer.writeheader()
+        writer.writerows([{column: row.get(column, "") for column in MODEL_ACCURACY_COLUMNS} for row in rows])
+    shutil.move(str(temp_path), str(accuracy_path))
+    return backup_path
+
+
 def backup_file(path: Path, backup_dir: Path, label: str) -> Path | None:
     if not path.exists():
         return None
@@ -486,6 +531,91 @@ def save_analysis(prediction_history_path: Path, backup_dir: Path, target_draw: 
         writer.writerows(output_rows)
     shutil.move(str(temp_path), str(prediction_history_path))
     return backup_path
+
+
+def save_model_accuracy_prediction(
+    accuracy_path: Path,
+    backup_dir: Path,
+    draw_date: str,
+    suggestions: dict[str, Any],
+) -> Path | None:
+    normalized_draw_date = normalize_date(draw_date)
+    existing_rows = read_model_accuracy(accuracy_path)
+    new_record = {
+        "draw_date": normalized_draw_date,
+        "method": suggestions["method"],
+        "suggested_last2": ",".join(item["number"] for item in suggestions["suggested_last2"]),
+        "suggested_3digit": ",".join(item["number"] for item in suggestions["suggested_3digit"]),
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "actual_last2": "",
+        "actual_3digit": "",
+        "hit_last2": "",
+        "hit_3digit": "",
+        "score": "",
+        "evaluated_at": "",
+        "note": SAFETY_NOTE,
+    }
+    return write_model_accuracy(accuracy_path, backup_dir, existing_rows + [new_record], "model_accuracy_prediction")
+
+
+def split_suggestions(value: str) -> list[str]:
+    return [item.strip() for item in str(value).split(",") if item.strip()]
+
+
+def evaluate_prediction_row(row: dict[str, str], actual: dict[str, str]) -> dict[str, str]:
+    evaluated = {column: row.get(column, "") for column in MODEL_ACCURACY_COLUMNS}
+    suggested_last2 = split_suggestions(evaluated["suggested_last2"])
+    suggested_3digit = split_suggestions(evaluated["suggested_3digit"])
+    actual_3digit = sorted({actual[column] for column in THREE_DIGIT_COLUMNS})
+    hit_last2 = actual["last2"] in suggested_last2
+    hit_3digit = any(value in suggested_3digit for value in actual_3digit)
+    evaluated.update(
+        {
+            "actual_last2": actual["last2"],
+            "actual_3digit": ",".join(actual_3digit),
+            "hit_last2": "1" if hit_last2 else "0",
+            "hit_3digit": "1" if hit_3digit else "0",
+            "score": str(int(hit_last2) + int(hit_3digit)),
+            "evaluated_at": datetime.now().isoformat(timespec="seconds"),
+            "note": SAFETY_NOTE,
+        }
+    )
+    return evaluated
+
+
+def refresh_model_accuracy(history_path: Path, accuracy_path: Path, backup_dir: Path) -> dict[str, Any]:
+    rows = read_model_accuracy(accuracy_path)
+    history_rows = load_history(history_path)
+    actual_by_date = {row["date"]: row for row in history_rows}
+    refreshed: list[dict[str, str]] = []
+    changed = False
+
+    for row in rows:
+        current = {column: row.get(column, "") for column in MODEL_ACCURACY_COLUMNS}
+        try:
+            draw_date = normalize_date(current["draw_date"])
+        except ValueError:
+            refreshed.append(current)
+            continue
+        current["draw_date"] = draw_date
+        actual = actual_by_date.get(draw_date)
+        if actual is None:
+            refreshed.append(current)
+            continue
+        evaluated = evaluate_prediction_row(current, actual)
+        if any(evaluated[column] != current.get(column, "") for column in MODEL_ACCURACY_COLUMNS):
+            changed = True
+        refreshed.append(evaluated)
+
+    backup_path = write_model_accuracy(accuracy_path, backup_dir, refreshed, "model_accuracy_refresh") if changed else None
+    return {
+        "rows": refreshed,
+        "updated": changed,
+        "backup_path": str(backup_path) if backup_path else "",
+        "total_predictions": len(refreshed),
+        "evaluated_predictions": sum(1 for row in refreshed if row.get("score", "").isdigit()),
+        "note": SAFETY_NOTE,
+    }
 
 
 def export_backtest_xlsx(path: Path, result: dict[str, Any]) -> None:
