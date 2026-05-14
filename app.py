@@ -14,7 +14,58 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-from predictor import (
+
+st.set_page_config(
+    page_title="Lottery History Dashboard",
+    page_icon="",
+    layout="wide",
+)
+
+
+def read_login_config() -> tuple[str, str]:
+    try:
+        username = st.secrets["auth"]["username"]
+        password = st.secrets["auth"]["password"]
+    except Exception:
+        st.error("Missing login config")
+        st.stop()
+    return str(username), str(password)
+
+
+def require_login() -> None:
+    app_username, app_password = read_login_config()
+    is_authenticated = (
+        st.session_state.get("authenticated") is True
+        and st.session_state.get("authenticated_username") == app_username
+    )
+
+    if is_authenticated:
+        with st.sidebar:
+            st.success("Logged in")
+            if st.button("Logout"):
+                st.session_state.pop("authenticated", None)
+                st.session_state.pop("authenticated_username", None)
+                st.rerun()
+        return
+
+    st.title("Login")
+    with st.form("login_form"):
+        username = st.text_input("Username")
+        password = st.text_input("Password", type="password")
+        submitted = st.form_submit_button("Login")
+
+    if submitted:
+        if username == app_username and password == app_password:
+            st.session_state["authenticated"] = True
+            st.session_state["authenticated_username"] = app_username
+            st.rerun()
+        st.error("Invalid username or password.")
+    st.stop()
+
+
+require_login()
+
+from predictor import (  # noqa: E402 - imported only after login gate blocks unauthenticated users.
     HYBRID_METHOD,
     METHOD,
     NOTE,
@@ -70,13 +121,6 @@ FIELD_LENGTHS = {
 }
 
 BACKUP_DIR = BASE_DIR / "backup"
-
-
-st.set_page_config(
-    page_title="Lottery History Dashboard",
-    page_icon="",
-    layout="wide",
-)
 
 st.sidebar.header("Settings")
 selected_method = st.sidebar.selectbox("Prediction method", SUPPORTED_METHODS, index=SUPPORTED_METHODS.index(HYBRID_METHOD))

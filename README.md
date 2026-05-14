@@ -57,6 +57,50 @@ Run the dashboard:
 py -m streamlit run app.py
 ```
 
+### Local Login Secrets
+
+The dashboard is protected by a simple username/password gate using `st.secrets`.
+
+Create a local file:
+
+```text
+.streamlit/secrets.toml
+```
+
+Use this format:
+
+```toml
+[auth]
+username = "admin"
+password = "your-real-password"
+```
+
+You can copy the template from:
+
+```text
+.streamlit/secrets.example.toml
+```
+
+Never put a real password in `app.py`, `README.md`, or any committed code file. The real `.streamlit/secrets.toml` file is ignored by git.
+
+### Streamlit Cloud Login Secrets
+
+On Streamlit Cloud:
+
+1. Open the app settings.
+2. Go to the Secrets section.
+3. Add:
+
+```toml
+[auth]
+username = "admin"
+password = "your-real-password"
+```
+
+4. Save and restart the app.
+
+Do not commit `.streamlit/secrets.toml` to GitHub. Commit only `.streamlit/secrets.example.toml`.
+
 Optional command-line refresh:
 
 ```powershell
@@ -105,6 +149,7 @@ Use a private repository unless you have reviewed privacy, access control, and d
 - The dashboard reads and writes only local project files.
 - Do not add secrets, passwords, API keys, or company-only files to Git.
 - `backup/`, `logs/`, virtual environments, and secret files are ignored by `.gitignore`.
+- Authentication uses `st.secrets`; never hardcode a real password in Python code.
 - The app must not be connected to a company server unless a separate approved deployment plan exists.
 - If deployed publicly, add authentication before publishing.
 
