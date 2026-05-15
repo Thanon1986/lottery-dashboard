@@ -1,27 +1,48 @@
 ﻿from __future__ import annotations
 
-import csv
 import json
-import re
-import shutil
 import subprocess
 import sys
-import time
-import traceback
-import zipfile
-from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
 import plotly.express as px
 import streamlit as st
 
+from localization import DEFAULT_LANGUAGE, LANGUAGE_LABELS, LANGUAGE_OPTIONS, TEXT, get_text
 
 st.set_page_config(
-    page_title="Lottery History Dashboard",
+    page_title=TEXT[DEFAULT_LANGUAGE]["app_title"],
     page_icon="",
     layout="wide",
 )
+
+if "language" not in st.session_state:
+    st.session_state["language"] = DEFAULT_LANGUAGE
+
+
+def current_language() -> str:
+    language = st.session_state.get("language", DEFAULT_LANGUAGE)
+    return language if language in LANGUAGE_OPTIONS else DEFAULT_LANGUAGE
+
+
+def tr(key: str) -> str:
+    return get_text(current_language(), key)
+
+
+def render_language_selector(key: str = "language_selector", label_visibility: str = "visible") -> None:
+    language_labels = [LANGUAGE_LABELS[language] for language in LANGUAGE_OPTIONS]
+    selected_language_label = st.selectbox(
+        tr("language"),
+        language_labels,
+        index=LANGUAGE_OPTIONS.index(current_language()),
+        key=key,
+        label_visibility=label_visibility,
+    )
+    selected_language = next(language for language, label in LANGUAGE_LABELS.items() if label == selected_language_label)
+    if selected_language != current_language():
+        st.session_state["language"] = selected_language
+        st.rerun()
 
 
 def read_login_config() -> tuple[str, str]:
@@ -29,12 +50,15 @@ def read_login_config() -> tuple[str, str]:
         username = st.secrets["auth"]["username"]
         password = st.secrets["auth"]["password"]
     except Exception:
-        st.error("Missing login config")
+        st.error(tr("missing_login_config"))
         st.stop()
     return str(username), str(password)
 
 
 def require_login() -> None:
+    with st.sidebar:
+        render_language_selector(key="sidebar_language_selector")
+
     app_username, app_password = read_login_config()
     is_authenticated = (
         st.session_state.get("authenticated") is True
@@ -43,25 +67,25 @@ def require_login() -> None:
 
     if is_authenticated:
         with st.sidebar:
-            st.success("Logged in")
-            if st.button("Logout"):
+            st.success(tr("logged_in"))
+            if st.button(tr("logout")):
                 st.session_state.pop("authenticated", None)
                 st.session_state.pop("authenticated_username", None)
                 st.rerun()
         return
 
-    st.title("Login")
+    st.title(tr("login"))
     with st.form("login_form"):
-        username = st.text_input("Username")
-        password = st.text_input("Password", type="password")
-        submitted = st.form_submit_button("Login")
+        username = st.text_input(tr("username"))
+        password = st.text_input(tr("password"), type="password")
+        submitted = st.form_submit_button(tr("login"))
 
     if submitted:
         if username == app_username and password == app_password:
             st.session_state["authenticated"] = True
             st.session_state["authenticated_username"] = app_username
             st.rerun()
-        st.error("Invalid username or password.")
+        st.error(tr("invalid_login"))
     st.stop()
 
 
@@ -71,13 +95,10 @@ from predictor import (  # noqa: E402 - imported only after login gate blocks un
     HYBRID_METHOD,
     METHOD,
     MODEL_ACCURACY_COLUMNS,
-    NOTE,
     PREDICTION_HISTORY_COLUMNS,
-    SAFETY_NOTE,
     SUPPORTED_METHODS,
     WEIGHTED_METHOD,
     backtest_methods,
-    generate_suggestions,
     load_history as predictor_load_history,
     phase3_analysis,
     refresh_model_accuracy,
@@ -87,78 +108,73 @@ from predictor import (  # noqa: E402 - imported only after login gate blocks un
     save_analysis,
     save_model_accuracy_prediction,
 )
+from config import APP_CONFIG  # noqa: E402
+from constants import (  # noqa: E402
+    ANALYZER_PATH,
+    BACKTEST_DETAIL_PATH,
+    BACKTEST_RESULT_PATH,
+    BACKUP_DIR,
+    BACKUP_RETENTION_LIMIT,
+    BACKUP_TARGETS,
+    BASE_DIR,
+    EXPORT_DIR,
+    FIELD_LENGTHS,
+    HISTORY_PATH,
+    LATEST_PREDICTION_PATH,
+    MODEL_ACCURACY_PATH,
+    PREDICTION_HISTORY_PATH,
+    REQUIRED_HISTORY_COLUMNS,
+    SUMMARY_PATH,
+)
+from utils import (  # noqa: E402
+    accuracy_leaderboard,
+    append_system_log,
+    build_ai_insights,
+    create_csv_backup,
+    data_quality_status,
+    ensure_operational_dirs,
+    export_csv_file,
+    export_full_system_zip,
+    folder_size_mb,
+    generate_latest_prediction_csv,
+    latest_export_time,
+    list_backup_files,
+    load_system_log,
+    normalize_date,
+    normalize_number,
+    normalize_text_columns,
+    numeric_column,
+    read_insight_history,
+    restore_backup_file,
+    restore_history_from_backup,
+    safe_read_csv,
+    save_insight_history_if_new,
+    save_new_lottery_row,
+    short_traceback,
+    validate_csv_for_target,
+    validate_new_lottery_row,
+)
 
 
-BASE_DIR = Path(__file__).resolve().parent
-HISTORY_PATH = BASE_DIR / "data" / "lottery_history.csv"
-SUMMARY_PATH = BASE_DIR / "output" / "stat_summary.xlsx"
-ANALYZER_PATH = BASE_DIR / "analyzer.py"
-PREDICTION_HISTORY_PATH = BASE_DIR / "output" / "prediction_history.csv"
-MODEL_ACCURACY_PATH = BASE_DIR / "output" / "model_accuracy.csv"
-LATEST_PREDICTION_PATH = BASE_DIR / "output" / "latest_prediction.csv"
-SYSTEM_LOG_PATH = BASE_DIR / "output" / "system_log.csv"
-BACKTEST_RESULT_PATH = BASE_DIR / "output" / "backtest_result.xlsx"
-BACKTEST_DETAIL_PATH = BASE_DIR / "output" / "backtest_detail.csv"
-DATA_QUALITY_REPORT_PATH = BASE_DIR / "output" / "data_quality_report.xlsx"
-
-REQUIRED_HISTORY_COLUMNS = [
-    "date",
-    "first_prize",
-    "last2",
-    "front3_1",
-    "front3_2",
-    "back3_1",
-    "back3_2",
-]
-
-NUMBER_COLUMNS = [
-    "first_prize",
-    "front3_1",
-    "front3_2",
-    "last2",
-    "back3_1",
-    "back3_2",
-]
-
-FIELD_LENGTHS = {
-    "first_prize": 6,
-    "last2": 2,
-    "front3_1": 3,
-    "front3_2": 3,
-    "back3_1": 3,
-    "back3_2": 3,
-}
-
-BACKUP_DIR = BASE_DIR / "backup"
-EXPORT_DIR = BASE_DIR / "exports"
-SYSTEM_LOG_COLUMNS = ["timestamp", "action", "status", "detail"]
-LATEST_PREDICTION_COLUMNS = ["generated_at", "method", "suggested_last2", "suggested_3digit", "source_rows", "note"]
-BACKUP_RETENTION_LIMIT = 100
-BACKUP_TARGETS = {
-    "lottery_history.csv": (HISTORY_PATH, REQUIRED_HISTORY_COLUMNS),
-    "prediction_history.csv": (PREDICTION_HISTORY_PATH, PREDICTION_HISTORY_COLUMNS),
-    "model_accuracy.csv": (MODEL_ACCURACY_PATH, MODEL_ACCURACY_COLUMNS),
-    "latest_prediction.csv": (LATEST_PREDICTION_PATH, LATEST_PREDICTION_COLUMNS),
-    "system_log.csv": (SYSTEM_LOG_PATH, SYSTEM_LOG_COLUMNS),
-}
-
-st.sidebar.header("Settings")
-selected_method = st.sidebar.selectbox("Prediction method", SUPPORTED_METHODS, index=SUPPORTED_METHODS.index(HYBRID_METHOD))
-selected_rolling_span = st.sidebar.selectbox("Rolling span", [0, 20, 50, 100], index=0, format_func=lambda value: "All prior rows" if value == 0 else f"{value} rows")
-selected_top_n = st.sidebar.slider("Top N suggestions", min_value=5, max_value=20, value=20, step=1)
-
-
-def normalize_text_columns(df: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
-    result = df.copy()
-    for column in columns:
-        if column in result.columns:
-            result[column] = result[column].astype("string").fillna("").str.strip()
-    return result
-
+st.sidebar.header(tr("settings"))
+selected_method = st.sidebar.selectbox(tr("prediction_method"), SUPPORTED_METHODS, index=SUPPORTED_METHODS.index(HYBRID_METHOD))
+selected_rolling_span = st.sidebar.selectbox(
+    tr("rolling_span"),
+    list(APP_CONFIG.rolling_spans),
+    index=0,
+    format_func=lambda value: tr("all_prior_rows") if value == 0 else f"{value} {tr('rows')}",
+)
+selected_top_n = st.sidebar.slider(
+    tr("top_n_suggestions"),
+    min_value=APP_CONFIG.min_top_n,
+    max_value=APP_CONFIG.max_top_n,
+    value=APP_CONFIG.default_top_n,
+    step=APP_CONFIG.top_n_step,
+)
 
 @st.cache_data(show_spinner=False)
 def load_history(path: Path) -> pd.DataFrame:
-    df = pd.read_csv(path, dtype=str, keep_default_na=False)
+    df = safe_read_csv(path, REQUIRED_HISTORY_COLUMNS)
     missing = [column for column in REQUIRED_HISTORY_COLUMNS if column not in df.columns]
     if missing:
         raise ValueError(f"Missing required column(s): {', '.join(missing)}")
@@ -204,382 +220,9 @@ def load_model_accuracy() -> tuple[pd.DataFrame, dict]:
     return df, result
 
 
-def ensure_operational_dirs() -> None:
-    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
-    EXPORT_DIR.mkdir(parents=True, exist_ok=True)
-
-
-def cleanup_old_backups(keep_latest: int = BACKUP_RETENTION_LIMIT) -> None:
-    ensure_operational_dirs()
-    backup_files = sorted(
-        [path for path in BACKUP_DIR.glob("*.csv") if re.fullmatch(r"\d{8}_\d{6}_.+\.csv", path.name)],
-        key=lambda path: path.stat().st_mtime,
-        reverse=True,
-    )
-    for old_file in backup_files[keep_latest:]:
-        old_file.unlink()
-
-
-def center_backup_path(source_path: Path) -> Path:
-    ensure_operational_dirs()
-    while True:
-        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        backup_path = BACKUP_DIR / f"{stamp}_{source_path.name}"
-        if not backup_path.exists():
-            return backup_path
-        time.sleep(1)
-
-
-def validate_csv_for_target(path: Path, target_name: str) -> None:
-    if target_name == "lottery_history.csv":
-        validate_history_csv_file(path)
-        return
-    target = BACKUP_TARGETS.get(target_name)
-    if target is None:
-        raise ValueError(f"Unsupported restore target: {target_name}")
-    _target_path, columns = target
-    ensure_csv_columns(path, columns)
-
-
-def create_csv_backup(path: Path) -> Path | None:
-    if not path.exists():
-        return None
-    if path.name in BACKUP_TARGETS:
-        validate_csv_for_target(path, path.name)
-    backup_path = center_backup_path(path)
-    shutil.copy2(path, backup_path)
-    if not backup_path.exists() or backup_path.stat().st_size == 0:
-        raise RuntimeError(f"Backup failed: {backup_path}")
-    cleanup_old_backups()
-    return backup_path
-
-
-def backup_output_file(path: Path, label: str) -> Path | None:
-    if path.suffix.lower() == ".csv" and path.name in BACKUP_TARGETS:
-        return create_csv_backup(path)
-    if not path.exists():
-        return None
-    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    backup_path = BACKUP_DIR / f"{path.stem}__backup__{stamp}__{label}{path.suffix}"
-    shutil.copy2(path, backup_path)
-    if not backup_path.exists() or backup_path.stat().st_size == 0:
-        raise RuntimeError(f"Backup failed: {backup_path}")
-    return backup_path
-
-
-def ensure_csv_columns(path: Path, columns: list[str]) -> None:
-    if not path.exists():
-        return
-    with path.open("r", encoding="utf-8-sig", newline="") as handle:
-        reader = csv.DictReader(handle)
-        if reader.fieldnames != columns:
-            raise ValueError(f"Invalid CSV header for {path}: expected {columns}, got {reader.fieldnames}")
-
-
-def append_system_log(action: str, status: str, detail: str) -> None:
-    SYSTEM_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    ensure_csv_columns(SYSTEM_LOG_PATH, SYSTEM_LOG_COLUMNS)
-    file_exists = SYSTEM_LOG_PATH.exists()
-    with SYSTEM_LOG_PATH.open("a", encoding="utf-8-sig", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=SYSTEM_LOG_COLUMNS, quoting=csv.QUOTE_ALL)
-        if not file_exists:
-            writer.writeheader()
-        writer.writerow(
-            {
-                "timestamp": datetime.now().isoformat(timespec="seconds"),
-                "action": action,
-                "status": status,
-                "detail": detail,
-            }
-        )
-
-
-def list_backup_files() -> pd.DataFrame:
-    ensure_operational_dirs()
-    rows: list[dict[str, str]] = []
-    for path in sorted(BACKUP_DIR.glob("*.csv"), key=lambda item: item.stat().st_mtime, reverse=True):
-        if not re.fullmatch(r"\d{8}_\d{6}_.+\.csv", path.name):
-            continue
-        source_file = re.sub(r"^\d{8}_\d{6}_", "", path.name)
-        rows.append(
-            {
-                "backup_file": path.name,
-                "source_file": source_file,
-                "size_kb": f"{path.stat().st_size / 1024:.2f}",
-                "modified_at": datetime.fromtimestamp(path.stat().st_mtime).isoformat(timespec="seconds"),
-                "path": str(path),
-            }
-        )
-    return pd.DataFrame(rows, columns=["backup_file", "source_file", "size_kb", "modified_at", "path"]).astype("string").fillna("")
-
-
-def folder_size_mb(path: Path) -> float:
-    if not path.exists():
-        return 0.0
-    return sum(file.stat().st_size for file in path.rglob("*") if file.is_file()) / (1024 * 1024)
-
-
-def latest_export_time() -> str:
-    ensure_operational_dirs()
-    export_files = [path for path in EXPORT_DIR.glob("*") if path.is_file()]
-    if not export_files:
-        return "No exports yet"
-    latest = max(export_files, key=lambda path: path.stat().st_mtime)
-    return datetime.fromtimestamp(latest.stat().st_mtime).isoformat(timespec="seconds")
-
-
-def export_csv_file(source_path: Path, export_label: str) -> Path:
-    ensure_operational_dirs()
-    if source_path.name in BACKUP_TARGETS:
-        validate_csv_for_target(source_path, source_path.name)
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    export_path = EXPORT_DIR / f"{stamp}_{export_label}.csv"
-    shutil.copy2(source_path, export_path)
-    if not export_path.exists() or export_path.stat().st_size == 0:
-        raise RuntimeError(f"Export failed: {export_path}")
-    append_system_log("export_csv", "success", f"{source_path} -> {export_path}")
-    return export_path
-
-
-def export_full_system_zip() -> Path:
-    ensure_operational_dirs()
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    export_path = EXPORT_DIR / f"{stamp}_lottery_dashboard_full_system.zip"
-    files = [
-        HISTORY_PATH,
-        PREDICTION_HISTORY_PATH,
-        MODEL_ACCURACY_PATH,
-        LATEST_PREDICTION_PATH,
-        SYSTEM_LOG_PATH,
-        SUMMARY_PATH,
-        BACKTEST_RESULT_PATH,
-        BACKTEST_DETAIL_PATH,
-        DATA_QUALITY_REPORT_PATH,
-    ]
-    with zipfile.ZipFile(export_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        for file_path in files:
-            if file_path.exists():
-                archive.write(file_path, file_path.relative_to(BASE_DIR))
-        for backup_path in BACKUP_DIR.glob("*.csv"):
-            if backup_path.is_file() and re.fullmatch(r"\d{8}_\d{6}_.+\.csv", backup_path.name):
-                archive.write(backup_path, backup_path.relative_to(BASE_DIR))
-    if not export_path.exists() or export_path.stat().st_size == 0:
-        raise RuntimeError(f"Full system export failed: {export_path}")
-    append_system_log("export_full_system_zip", "success", str(export_path))
-    return export_path
-
-
-def restore_backup_file(backup_path: Path, target_name: str) -> Path | None:
-    if target_name not in BACKUP_TARGETS:
-        raise ValueError(f"Unsupported restore target: {target_name}")
-    target_path, _columns = BACKUP_TARGETS[target_name]
-    validate_csv_for_target(backup_path, target_name)
-    current_backup = create_csv_backup(target_path)
-    temp_path = target_path.with_name(f"{target_path.stem}__restore_tmp{target_path.suffix}")
-    shutil.copy2(backup_path, temp_path)
-    validate_csv_for_target(temp_path, target_name)
-    shutil.move(str(temp_path), str(target_path))
-    append_system_log("restore_backup", "success", f"{backup_path} -> {target_path}; pre_restore_backup={current_backup}")
-    st.cache_data.clear()
-    return current_backup
-
-
-def load_system_log(limit: int | None = None) -> pd.DataFrame:
-    if not SYSTEM_LOG_PATH.exists():
-        append_system_log("system_log_init", "success", "System log created.")
-    df = pd.read_csv(SYSTEM_LOG_PATH, dtype=str, keep_default_na=False)
-    df = normalize_text_columns(df, SYSTEM_LOG_COLUMNS)
-    df = df.sort_values("timestamp", ascending=False, kind="stable").reset_index(drop=True)
-    if limit:
-        return df.head(limit)
-    return df
-
-
-def validate_history_dataframe(df: pd.DataFrame) -> None:
-    missing = [column for column in REQUIRED_HISTORY_COLUMNS if column not in df.columns]
-    if missing:
-        raise ValueError(f"Missing required column(s): {', '.join(missing)}")
-    if df[REQUIRED_HISTORY_COLUMNS].isna().any().any():
-        raise ValueError("History CSV contains missing values.")
-    duplicate_dates = df["date"][df["date"].duplicated()].tolist()
-    if duplicate_dates:
-        raise ValueError(f"Duplicate draw date(s) after save validation: {', '.join(duplicate_dates)}")
-    for column, length in FIELD_LENGTHS.items():
-        invalid = df[~df[column].astype(str).str.fullmatch(rf"\d{{{length}}}")]
-        if not invalid.empty:
-            raise ValueError(f"Invalid {column} value found during save validation.")
-
-
-def validate_history_csv_file(path: Path) -> None:
-    candidate = pd.read_csv(path, dtype=str, keep_default_na=False)
-    candidate = normalize_text_columns(candidate[REQUIRED_HISTORY_COLUMNS], REQUIRED_HISTORY_COLUMNS)
-    candidate["date"] = candidate["date"].apply(normalize_date)
-    for column, length in FIELD_LENGTHS.items():
-        candidate[column] = candidate[column].apply(lambda value, col=column, size=length: normalize_number(value, size, col))
-    validate_history_dataframe(candidate)
-
-
-def restore_history_from_backup(backup_path: Path) -> None:
-    if not backup_path.exists():
-        raise RuntimeError(f"Rollback backup is missing: {backup_path}")
-    shutil.copy2(backup_path, HISTORY_PATH)
-    validate_history_csv_file(HISTORY_PATH)
-
-
-def generate_latest_prediction_csv(top_n: int) -> Path | None:
-    generated_at = datetime.now().isoformat(timespec="seconds")
-    rows: list[dict[str, str]] = []
-    for method in SUPPORTED_METHODS:
-        suggestions = generate_suggestions(HISTORY_PATH, method=method, top_n=top_n)
-        rows.append(
-            {
-                "generated_at": generated_at,
-                "method": method,
-                "suggested_last2": ",".join(item["number"] for item in suggestions["suggested_last2"]),
-                "suggested_3digit": ",".join(item["number"] for item in suggestions["suggested_3digit"]),
-                "source_rows": str(suggestions["source_rows"]),
-                "note": SAFETY_NOTE,
-            }
-        )
-
-    backup_path = backup_output_file(LATEST_PREDICTION_PATH, "latest_prediction")
-    LATEST_PREDICTION_PATH.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = LATEST_PREDICTION_PATH.with_name(f"{LATEST_PREDICTION_PATH.stem}__tmp{LATEST_PREDICTION_PATH.suffix}")
-    with temp_path.open("w", encoding="utf-8-sig", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=LATEST_PREDICTION_COLUMNS, quoting=csv.QUOTE_ALL)
-        writer.writeheader()
-        writer.writerows(rows)
-    ensure_csv_columns(temp_path, LATEST_PREDICTION_COLUMNS)
-    shutil.move(str(temp_path), str(LATEST_PREDICTION_PATH))
-    return backup_path
-
-
-def data_quality_status() -> str:
-    if not DATA_QUALITY_REPORT_PATH.exists():
-        return "Missing data quality report"
-    try:
-        summary = pd.read_excel(DATA_QUALITY_REPORT_PATH, sheet_name="Summary", dtype=str, keep_default_na=False, engine="openpyxl")
-        metric_map = {str(row.get("metric", "")).strip(): str(row.get("value", "")).strip() for _index, row in summary.iterrows()}
-        critical_count = int(float(metric_map.get("critical_count", "0") or 0))
-        warning_count = int(float(metric_map.get("warning_count", "0") or 0))
-        if critical_count:
-            return f"Critical issues: {critical_count}"
-        if warning_count:
-            return f"Warnings: {warning_count}"
-        return "OK"
-    except Exception as exc:
-        return f"Unreadable report: {short_traceback(exc)}"
-
-
-def accuracy_leaderboard(df: pd.DataFrame) -> tuple[pd.DataFrame, float, str]:
-    work = df.copy()
-    for column in ["hit_last2", "hit_3digit", "score"]:
-        work[f"{column}_num"] = pd.to_numeric(work[column], errors="coerce")
-    evaluated = work[work["score_num"].notna()].copy()
-    if evaluated.empty:
-        return pd.DataFrame(), 0.0, ""
-    total_hit_units = evaluated["hit_last2_num"].sum() + evaluated["hit_3digit_num"].sum()
-    latest_accuracy = total_hit_units / (len(evaluated) * 2)
-    leaderboard = (
-        evaluated.groupby("method", dropna=False)
-        .agg(
-            total_predictions=("method", "size"),
-            last2_hit_count=("hit_last2_num", "sum"),
-            three_digit_hit_count=("hit_3digit_num", "sum"),
-            total_score=("score_num", "sum"),
-        )
-        .reset_index()
-    )
-    leaderboard["last2_hit_rate"] = leaderboard["last2_hit_count"] / leaderboard["total_predictions"]
-    leaderboard["3digit_hit_rate"] = leaderboard["three_digit_hit_count"] / leaderboard["total_predictions"]
-    leaderboard["overall_hit_rate"] = leaderboard["total_score"] / (leaderboard["total_predictions"] * 2)
-    leaderboard["avg_score"] = leaderboard["total_score"] / leaderboard["total_predictions"]
-    leaderboard = leaderboard.sort_values(
-        ["overall_hit_rate", "avg_score", "total_predictions", "method"],
-        ascending=[False, False, False, True],
-        kind="stable",
-    ).reset_index(drop=True)
-    leaderboard.insert(0, "rank", range(1, len(leaderboard) + 1))
-    return leaderboard, float(latest_accuracy), str(leaderboard.iloc[0]["method"])
-
-
-def numeric_column(df: pd.DataFrame, column: str) -> pd.Series:
-    return pd.to_numeric(df[column], errors="coerce").fillna(0)
-
-
 def show_file_error(message: str) -> None:
     st.error(message)
     st.stop()
-
-
-def normalize_date(value: str) -> str:
-    """Normalize supported dates to YYYY-MM-DD for in-app use."""
-    raw_value = str(value).strip()
-    formats = [
-        ("%Y-%m-%d", "YYYY-MM-DD"),
-        ("%d/%m/%Y", "DD/MM/YYYY"),
-    ]
-    for date_format, _label in formats:
-        try:
-            return datetime.strptime(raw_value, date_format).strftime("%Y-%m-%d")
-        except ValueError:
-            continue
-    raise ValueError(f"Invalid date format {raw_value!r}; expected YYYY-MM-DD or DD/MM/YYYY")
-
-
-def normalize_number(value: str, length: int, column: str) -> str:
-    """Normalize fixed-width lottery values for display/analysis without editing CSV."""
-    raw_value = str(value).strip()
-    if not raw_value.isdigit():
-        raise ValueError(f"Invalid {column} value {raw_value!r}; digits only")
-    if len(raw_value) > length:
-        raise ValueError(f"Invalid {column} value {raw_value!r}; max {length} digits")
-    return raw_value.zfill(length)
-
-
-def validate_new_lottery_row(row: dict[str, str], history: pd.DataFrame) -> list[str]:
-    errors: list[str] = []
-    try:
-        row["date"] = normalize_date(row["date"])
-    except ValueError as exc:
-        errors.append(str(exc))
-
-    for field, length in FIELD_LENGTHS.items():
-        value = row[field].strip()
-        if not re.fullmatch(rf"\d{{{length}}}", value):
-            errors.append(f"{field} must be exactly {length} digits.")
-
-    if not errors and row["date"] in set(history["date"].apply(normalize_date)):
-        errors.append(f"date already exists: {row['date']}")
-
-    return errors
-
-
-def backup_history_csv(path: Path) -> Path:
-    backup_path = create_csv_backup(path)
-    if backup_path is None:
-        raise RuntimeError(f"Backup source does not exist: {path}")
-    return backup_path
-
-
-def save_new_lottery_row(row: dict[str, str], history: pd.DataFrame) -> Path:
-    backup_path = backup_history_csv(HISTORY_PATH)
-    new_df = pd.concat([pd.DataFrame([row], columns=REQUIRED_HISTORY_COLUMNS), history], ignore_index=True)
-    new_df = normalize_text_columns(new_df[REQUIRED_HISTORY_COLUMNS], REQUIRED_HISTORY_COLUMNS)
-    new_df["date"] = new_df["date"].apply(normalize_date)
-    new_df = new_df.drop_duplicates(subset=["date"], keep="first")
-    new_df = new_df.sort_values("date", ascending=False, kind="stable").reset_index(drop=True)
-    validate_history_dataframe(new_df)
-    temp_path = HISTORY_PATH.with_name(f"{HISTORY_PATH.stem}__streamlit_tmp{HISTORY_PATH.suffix}")
-    new_df.to_csv(temp_path, index=False, encoding="utf-8-sig", quoting=csv.QUOTE_ALL)
-    validate_history_csv_file(temp_path)
-    shutil.move(str(temp_path), str(HISTORY_PATH))
-    return backup_path
-
-
-def short_traceback(exc: BaseException) -> str:
-    return "".join(traceback.format_exception_only(type(exc), exc)).strip()
 
 
 def recalculate_summary() -> tuple[bool, str]:
@@ -591,7 +234,7 @@ def recalculate_summary() -> tuple[bool, str]:
             cwd=BASE_DIR,
             capture_output=True,
             text=True,
-            timeout=120,
+            timeout=APP_CONFIG.subprocess_timeout_seconds,
             check=False,
         )
     except Exception as exc:
@@ -611,7 +254,7 @@ def recalculate_summary() -> tuple[bool, str]:
         return False, short_details
 
     st.cache_data.clear()
-    return True, "Summary recalculated successfully."
+    return True, tr("summary_recalculated")
 
 
 def run_backtest_export(top_n: int, rolling_span: int) -> tuple[bool, str, dict | None]:
@@ -626,7 +269,7 @@ def run_backtest_export(top_n: int, rolling_span: int) -> tuple[bool, str, dict 
             rolling_span=span,
         )
         st.cache_data.clear()
-        return True, f"Backtest completed: {BACKTEST_RESULT_PATH}", result
+        return True, f"{tr('backtest_completed')}: {BACKTEST_RESULT_PATH}", result
     except Exception as exc:
         return False, short_traceback(exc), None
 
@@ -650,12 +293,12 @@ def run_auto_refresh(top_n: int, rolling_span: int) -> list[str]:
         "success",
         f"evaluated={accuracy_result['evaluated_predictions']}; total={accuracy_result['total_predictions']}; backup={accuracy_backup or ''}",
     )
-    messages.append("Model accuracy and leaderboard refreshed.")
+    messages.append(tr("accuracy_leaderboard_refreshed"))
 
     append_system_log("refresh_prediction_history", "started", "Validating prediction history file.")
     prediction_rows = read_prediction_history(PREDICTION_HISTORY_PATH)
     append_system_log("refresh_prediction_history", "success", f"records={len(prediction_rows)}")
-    messages.append("Prediction history refreshed.")
+    messages.append(tr("prediction_history_refreshed"))
 
     append_system_log("generate_latest_prediction", "started", "Generating latest statistical suggestions.")
     latest_backup = generate_latest_prediction_csv(top_n)
@@ -663,7 +306,7 @@ def run_auto_refresh(top_n: int, rolling_span: int) -> list[str]:
     if latest_backup:
         latest_detail += f"; backup={latest_backup}"
     append_system_log("generate_latest_prediction", "success", latest_detail)
-    messages.append("Latest prediction generated.")
+    messages.append(tr("latest_prediction_generated"))
 
     append_system_log("refresh_backtest", "started", "Running rolling backtest and model comparison outputs.")
     backtest_ok, backtest_message, _result = run_backtest_export(top_n, rolling_span)
@@ -671,7 +314,7 @@ def run_auto_refresh(top_n: int, rolling_span: int) -> list[str]:
         append_system_log("refresh_backtest", "failed", backtest_message)
         raise RuntimeError(backtest_message)
     append_system_log("refresh_backtest", "success", backtest_message)
-    messages.append("Backtest and model comparison refreshed.")
+    messages.append(tr("backtest_model_refreshed"))
 
     st.cache_data.clear()
     return messages
@@ -683,7 +326,7 @@ def process_new_result(row: dict[str, str], history: pd.DataFrame, top_n: int, r
         append_system_log("add_result", "started", f"draw_date={row['date']}")
         backup_path = save_new_lottery_row(row, history)
         append_system_log("add_result", "success", f"draw_date={row['date']}; backup={backup_path}")
-        messages = [f"Saved result. Backup created: {backup_path}"]
+        messages = [f"{tr('saved_result_backup')}: {backup_path}"]
         messages.extend(run_auto_refresh(top_n, rolling_span))
         append_system_log("auto_result_processing", "success", f"draw_date={row['date']}")
         return messages
@@ -701,13 +344,14 @@ def process_new_result(row: dict[str, str], history: pd.DataFrame, top_n: int, r
         raise RuntimeError(detail) from exc
 
 
-st.title("Lottery History Dashboard")
-st.warning(SAFETY_NOTE)
+render_language_selector(key="main_language_selector")
+st.title(tr("app_title"))
+st.warning(tr("safety_note"))
 
 if not HISTORY_PATH.exists():
-    show_file_error(f"Missing data file: {HISTORY_PATH}")
+    show_file_error(f"{tr('missing_data_file')}: {HISTORY_PATH}")
 if not SUMMARY_PATH.exists():
-    show_file_error(f"Missing summary file: {SUMMARY_PATH}")
+    show_file_error(f"{tr('missing_summary_file')}: {SUMMARY_PATH}")
 
 try:
     history_df = load_history(HISTORY_PATH)
@@ -716,6 +360,9 @@ try:
     model_comparison = load_model_comparison(HISTORY_PATH, selected_top_n, selected_rolling_span)
     prediction_history_df = load_prediction_history(PREDICTION_HISTORY_PATH)
     model_accuracy_df, model_accuracy_result = load_model_accuracy()
+    ai_insight_result = build_ai_insights(history_df)
+    insight_save_result = save_insight_history_if_new(ai_insight_result)
+    insight_history_df = read_insight_history()
     system_log_df = load_system_log(20)
     backup_df = list_backup_files()
 except Exception as exc:
@@ -738,37 +385,38 @@ for frame in [top_last2_df, top_3digit_df]:
         frame["share"] = numeric_column(frame, "share")
 
 metric_cols = st.columns(4)
-metric_cols[0].metric("History Rows", f"{len(history_df):,}")
-metric_cols[1].metric("Latest Draw", history_df["date"].iloc[0])
-metric_cols[2].metric("Current Method", selected_method)
-metric_cols[3].metric("Last Updated", phase3["last_updated"])
+metric_cols[0].metric(tr("history_rows"), f"{len(history_df):,}")
+metric_cols[1].metric(tr("latest_draw"), history_df["date"].iloc[0])
+metric_cols[2].metric(tr("current_method"), selected_method)
+metric_cols[3].metric(tr("last_updated"), phase3["last_updated"])
 
-tab_history, tab_add, tab_next, tab_prediction_history, tab_accuracy, tab_status, tab_backup, tab_model, tab_backtest, tab_summary, tab_digits, tab_last2, tab_3digit = st.tabs(
+tab_history, tab_add, tab_next, tab_prediction_history, tab_accuracy, tab_insights, tab_status, tab_backup, tab_model, tab_backtest, tab_summary, tab_digits, tab_last2, tab_3digit = st.tabs(
     [
-        "Lottery History",
-        "Add Result",
-        "Next Draw Analysis",
-        "Prediction History",
-        "Model Accuracy",
-        "System Status",
-        "Backup & Export",
-        "Model Comparison",
-        "Backtest",
-        "Summary",
-        "Digit Frequency",
-        "Top Last2",
-        "Top 3Digit",
+        tr("tab_history"),
+        tr("tab_add"),
+        tr("tab_next"),
+        tr("tab_prediction_history"),
+        tr("tab_accuracy"),
+        tr("tab_insights"),
+        tr("tab_status"),
+        tr("tab_backup"),
+        tr("tab_model"),
+        tr("tab_backtest"),
+        tr("tab_summary"),
+        tr("tab_digits"),
+        tr("tab_last2"),
+        tr("tab_3digit"),
     ]
 )
 
 with tab_history:
-    st.subheader("Lottery History")
-    st.info(NOTE)
+    st.subheader(tr("tab_history"))
+    st.info(tr("safety_note"))
     st.dataframe(history_df, use_container_width=True, hide_index=True)
 
 with tab_add:
-    st.subheader("Add New Lottery Result")
-    st.info(NOTE)
+    st.subheader(tr("add_new_result"))
+    st.info(tr("safety_note"))
     success_message = st.session_state.pop("add_result_success", None)
     if success_message:
         st.success(success_message)
@@ -781,7 +429,7 @@ with tab_add:
         front3_2 = form_cols[0].text_input("front3_2", max_chars=3)
         back3_1 = form_cols[1].text_input("back3_1", max_chars=3)
         back3_2 = form_cols[2].text_input("back3_2", max_chars=3)
-        submitted = st.form_submit_button("Save result")
+        submitted = st.form_submit_button(tr("save_result"))
 
     if submitted:
         new_row = {
@@ -800,16 +448,16 @@ with tab_add:
         else:
             try:
                 process_messages = process_new_result(new_row, history_df, selected_top_n, selected_rolling_span)
-                st.session_state["add_result_success"] = "Auto processing completed. " + " ".join(process_messages)
+                st.session_state["add_result_success"] = f"{tr('auto_processing_completed')} " + " ".join(process_messages)
                 st.cache_data.clear()
                 st.rerun()
             except Exception as exc:
-                st.error(f"Auto processing failed. Changes were rolled back when possible: {exc}")
+                st.error(f"{tr('auto_processing_failed')}: {exc}")
 
 with tab_next:
-    st.subheader("Next Draw Analysis")
-    st.info(NOTE)
-    st.caption(f"Source rows: {phase3['source_rows']}")
+    st.subheader(tr("next_draw_analysis"))
+    st.info(tr("safety_note"))
+    st.caption(f"{tr('source_rows')}: {phase3['source_rows']}")
 
     suggested_last2_df = pd.DataFrame(phase3["frequency"]["suggested_last2"]).astype("string").fillna("")
     suggested_3digit_df = pd.DataFrame(phase3["frequency"]["suggested_3digit"]).astype("string").fillna("")
@@ -821,59 +469,59 @@ with tab_next:
     st.markdown(f"**{METHOD}**")
     freq_cols = st.columns(2)
     with freq_cols[0]:
-        st.subheader(f"Frequency Last2 Top {selected_top_n}")
+        st.subheader(f"{tr('frequency_last2_top')} {selected_top_n}")
         st.dataframe(suggested_last2_df, use_container_width=True, hide_index=True)
     with freq_cols[1]:
-        st.subheader(f"Frequency 3Digit Top {selected_top_n}")
+        st.subheader(f"{tr('frequency_3digit_top')} {selected_top_n}")
         st.dataframe(suggested_3digit_df, use_container_width=True, hide_index=True)
 
     st.markdown(f"**{WEIGHTED_METHOD}**")
     weighted_cols = st.columns(2)
     with weighted_cols[0]:
-        st.subheader(f"Weighted Last2 Top {selected_top_n}")
+        st.subheader(f"{tr('weighted_last2_top')} {selected_top_n}")
         st.dataframe(weighted_last2_df, use_container_width=True, hide_index=True)
     with weighted_cols[1]:
-        st.subheader(f"Weighted 3Digit Top {selected_top_n}")
+        st.subheader(f"{tr('weighted_3digit_top')} {selected_top_n}")
         st.dataframe(weighted_3digit_df, use_container_width=True, hide_index=True)
 
     st.markdown(f"**{HYBRID_METHOD}**")
     hybrid_cols = st.columns(2)
     with hybrid_cols[0]:
-        st.subheader(f"Hybrid Last2 Top {selected_top_n}")
+        st.subheader(f"{tr('hybrid_last2_top')} {selected_top_n}")
         st.dataframe(hybrid_last2_df, use_container_width=True, hide_index=True)
     with hybrid_cols[1]:
-        st.subheader(f"Hybrid 3Digit Top {selected_top_n}")
+        st.subheader(f"{tr('hybrid_3digit_top')} {selected_top_n}")
         st.dataframe(hybrid_3digit_df, use_container_width=True, hide_index=True)
 
-    st.subheader("Digit Position Analysis")
+    st.subheader(tr("digit_position_analysis"))
     position_cols = st.columns(2)
     with position_cols[0]:
-        st.caption("last2 positions")
+        st.caption(tr("last2_positions"))
         st.dataframe(pd.DataFrame(phase3["positions"]["last2"]).astype("string"), use_container_width=True, hide_index=True)
     with position_cols[1]:
-        st.caption("3digit positions")
+        st.caption(tr("three_digit_positions"))
         st.dataframe(pd.DataFrame(phase3["positions"]["three_digit"]).astype("string"), use_container_width=True, hide_index=True)
 
-    st.subheader("Hot / Cold Numbers")
+    st.subheader(tr("hot_cold_numbers"))
     hot_cold = phase3["hot_cold"]
     hot_cols = st.columns(4)
     with hot_cols[0]:
-        st.caption("Hot last2")
+        st.caption(tr("hot_last2"))
         st.dataframe(pd.DataFrame(hot_cold["hot_last2"]).astype("string"), use_container_width=True, hide_index=True)
     with hot_cols[1]:
-        st.caption("Hot 3digit")
+        st.caption(tr("hot_3digit"))
         st.dataframe(pd.DataFrame(hot_cold["hot_3digit"]).astype("string"), use_container_width=True, hide_index=True)
     with hot_cols[2]:
-        st.caption("Cold last2")
+        st.caption(tr("cold_last2"))
         st.dataframe(pd.DataFrame(hot_cold["cold_last2"]).astype("string"), use_container_width=True, hide_index=True)
     with hot_cols[3]:
-        st.caption("Cold 3digit")
+        st.caption(tr("cold_3digit"))
         st.dataframe(pd.DataFrame(hot_cold["cold_3digit"]).astype("string"), use_container_width=True, hide_index=True)
 
     with st.form("save_next_draw_analysis", clear_on_submit=False):
         target_draw = st.text_input("target_draw", placeholder="YYYY-MM-DD or DD/MM/YYYY", max_chars=10)
-        method_choice = st.selectbox("method", SUPPORTED_METHODS, index=SUPPORTED_METHODS.index(selected_method))
-        save_submitted = st.form_submit_button("Save Analysis")
+        method_choice = st.selectbox(tr("method"), SUPPORTED_METHODS, index=SUPPORTED_METHODS.index(selected_method))
+        save_submitted = st.form_submit_button(tr("save_analysis"))
 
     save_message = st.session_state.pop("save_analysis_success", None)
     if save_message:
@@ -907,23 +555,23 @@ with tab_next:
                 if path
             ]
             if backup_notes:
-                st.session_state["save_analysis_success"] = f"Analysis saved. Backup created: {', '.join(backup_notes)}"
+                st.session_state["save_analysis_success"] = f"{tr('analysis_saved_backup')}: {', '.join(backup_notes)}"
             else:
-                st.session_state["save_analysis_success"] = "Analysis saved. Tracking files created."
+                st.session_state["save_analysis_success"] = tr("analysis_saved_tracking")
             st.rerun()
         except Exception as exc:
-            st.error(f"Save Analysis failed: {exc}")
+            st.error(f"{tr('save_analysis_failed')}: {exc}")
 
-    st.caption(NOTE)
+    st.caption(tr("safety_note"))
 
 with tab_prediction_history:
-    st.subheader("Prediction History")
-    st.info(NOTE)
+    st.subheader(tr("prediction_history"))
+    st.info(tr("safety_note"))
     st.dataframe(prediction_history_df, use_container_width=True, hide_index=True)
 
 with tab_accuracy:
-    st.subheader("Model Accuracy")
-    st.info(NOTE)
+    st.subheader(tr("model_accuracy"))
+    st.info(tr("safety_note"))
 
     total_predictions = len(model_accuracy_df)
     accuracy_work = model_accuracy_df.copy()
@@ -935,21 +583,21 @@ with tab_accuracy:
     overall_hit_rate = total_hit_units / (evaluated_count * 2) if evaluated_count else 0
 
     accuracy_cols = st.columns(4)
-    accuracy_cols[0].metric("Total Predictions", f"{total_predictions:,}")
-    accuracy_cols[1].metric("Evaluated", f"{evaluated_count:,}")
-    accuracy_cols[2].metric("Hit Rate %", f"{overall_hit_rate:.2%}")
-    accuracy_cols[3].metric("Tracking File", MODEL_ACCURACY_PATH.name)
+    accuracy_cols[0].metric(tr("total_predictions"), f"{total_predictions:,}")
+    accuracy_cols[1].metric(tr("evaluated"), f"{evaluated_count:,}")
+    accuracy_cols[2].metric(tr("hit_rate_percent"), f"{overall_hit_rate:.2%}")
+    accuracy_cols[3].metric(tr("tracking_file"), MODEL_ACCURACY_PATH.name)
 
     if model_accuracy_result.get("updated"):
-        st.success("Model accuracy refreshed against available actual results.")
+        st.success(tr("accuracy_refreshed"))
     if model_accuracy_result.get("backup_path"):
-        st.caption(f"Backup created: {model_accuracy_result['backup_path']}")
+        st.caption(f"{tr('backup_created')}: {model_accuracy_result['backup_path']}")
 
-    st.subheader("Accuracy Table")
+    st.subheader(tr("accuracy_table"))
     st.dataframe(model_accuracy_df, use_container_width=True, hide_index=True)
 
     if evaluated_df.empty:
-        st.info("No evaluated prediction records yet. Save an analysis for a draw date, then add the actual result when available.")
+        st.info(tr("no_evaluated_predictions"))
     else:
         leaderboard = (
             evaluated_df.groupby("method", dropna=False)
@@ -973,12 +621,12 @@ with tab_accuracy:
         leaderboard.insert(0, "rank", range(1, len(leaderboard) + 1))
 
         best_method = str(leaderboard.iloc[0]["method"])
-        st.success(f"Best current model by historical tracking: {best_method}")
+        st.success(f"{tr('best_current_model')}: {best_method}")
 
         def highlight_best(row: pd.Series) -> list[str]:
             return ["background-color: #d9f7be" if row["rank"] == 1 else "" for _value in row]
 
-        st.subheader("Leaderboard Model Ranking")
+        st.subheader(tr("leaderboard_model_ranking"))
         st.dataframe(leaderboard.style.apply(highlight_best, axis=1), use_container_width=True, hide_index=True)
 
         rate_chart_df = leaderboard[["method", "last2_hit_rate", "3digit_hit_rate", "overall_hit_rate"]].melt(
@@ -986,7 +634,7 @@ with tab_accuracy:
             var_name="metric",
             value_name="hit_rate",
         )
-        st.subheader("Hit Rate Comparison")
+        st.subheader(tr("hit_rate_comparison"))
         st.plotly_chart(px.bar(rate_chart_df, x="method", y="hit_rate", color="metric", barmode="group"), use_container_width=True)
 
         trend_df = evaluated_df.sort_values(["method", "draw_date", "created_at"], kind="stable").copy()
@@ -994,57 +642,128 @@ with tab_accuracy:
         trend_df["accuracy_trend"] = (
             trend_df.groupby("method")["accuracy_point"].expanding().mean().reset_index(level=0, drop=True)
         )
-        st.subheader("Accuracy Trend")
+        st.subheader(tr("accuracy_trend"))
         st.plotly_chart(
             px.line(trend_df, x="draw_date", y="accuracy_trend", color="method", markers=True),
             use_container_width=True,
         )
 
+with tab_insights:
+    st.subheader(tr("ai_insights"))
+    st.info(tr("safety_note"))
+    st.caption(tr("insight_caption"))
+
+    if insight_save_result.get("updated"):
+        st.success(f"{tr('insight_history_updated')}: {insight_save_result['added']} {tr('new_cards')}")
+    if insight_save_result.get("backup_path"):
+        st.caption(f"{tr('insight_backup_created')}: {insight_save_result['backup_path']}")
+
+    insight_cards = pd.DataFrame(ai_insight_result["insights"])
+    if not insight_cards.empty:
+        insight_cards["confidence_num"] = pd.to_numeric(insight_cards["confidence"], errors="coerce").fillna(0)
+        avg_confidence = insight_cards["confidence_num"].mean()
+        high_count = int((insight_cards["signal"] == "HIGH").sum())
+        insight_metrics = st.columns(4)
+        insight_metrics[0].metric(tr("insight_cards"), f"{len(insight_cards):,}")
+        insight_metrics[1].metric(tr("average_confidence"), f"{avg_confidence:.0f}/100")
+        insight_metrics[2].metric(tr("high_signals"), f"{high_count:,}")
+        insight_metrics[3].metric(tr("generated"), str(ai_insight_result["generated_at"]))
+
+        warning_list = ai_insight_result.get("warnings", [])
+        if warning_list:
+            st.warning(f"{tr('warnings')}: " + ", ".join(str(item) for item in warning_list))
+        else:
+            st.success(tr("no_insight_warnings"))
+
+        for row_start in range(0, len(insight_cards), 2):
+            card_cols = st.columns(2)
+            for card_col, (_index, card) in zip(card_cols, insight_cards.iloc[row_start : row_start + 2].iterrows()):
+                with card_col:
+                    signal = str(card["signal"])
+                    title = str(card["title"])
+                    confidence = str(card["confidence"])
+                    explanation = str(card["explanation"])
+                    warning_text = str(card["warnings"])
+                    st.markdown(f"**{title}**")
+                    st.metric(tr("signal_confidence"), f"{signal}", f"{confidence}/100")
+                    st.write(explanation)
+                    if warning_text:
+                        st.caption(f"{tr('warning')}: {warning_text}")
+                    st.caption(f"{tr('generated')}: {card['generated_at']}")
+
+    st.subheader(tr("insight_table"))
+    st.dataframe(insight_cards.drop(columns=["confidence_num"], errors="ignore"), use_container_width=True, hide_index=True)
+
+    st.subheader(tr("digit_heatmap"))
+    heatmap_df = ai_insight_result["heatmap"]
+    if isinstance(heatmap_df, pd.DataFrame) and not heatmap_df.empty:
+        heatmap_pivot = heatmap_df.pivot(index="field", columns="digit", values="count")
+        st.plotly_chart(px.imshow(heatmap_pivot, aspect="auto", color_continuous_scale="Blues"), use_container_width=True)
+
+    st.subheader(tr("trend_chart"))
+    trend_chart = ai_insight_result["trend"]
+    if isinstance(trend_chart, pd.DataFrame) and not trend_chart.empty:
+        st.plotly_chart(
+            px.line(trend_chart, x="date", y="cumulative_count", color="last2", markers=False),
+            use_container_width=True,
+        )
+
+    st.subheader(tr("digit_movement_chart"))
+    movement_chart = ai_insight_result["movement"]
+    if isinstance(movement_chart, pd.DataFrame) and not movement_chart.empty:
+        st.plotly_chart(
+            px.line(movement_chart, x="period", y="share", color="digit", markers=True),
+            use_container_width=True,
+        )
+
+    st.subheader(tr("insight_history"))
+    st.dataframe(insight_history_df.sort_values("generated_at", ascending=False, kind="stable"), use_container_width=True, hide_index=True)
+
 with tab_status:
-    st.subheader("System Status")
-    st.info(NOTE)
+    st.subheader(tr("system_status"))
+    st.info(tr("safety_note"))
     leaderboard_df, latest_accuracy, best_model = accuracy_leaderboard(model_accuracy_df)
     latest_log_time = system_log_df["timestamp"].iloc[0] if not system_log_df.empty else phase3["last_updated"]
     quality_status = data_quality_status()
 
     status_cols = st.columns(4)
-    status_cols[0].metric("Total Draws", f"{len(history_df):,}")
-    status_cols[1].metric("Total Predictions", f"{len(model_accuracy_df):,}")
-    status_cols[2].metric("Best Model", best_model or "Not evaluated")
-    status_cols[3].metric("Latest Accuracy", f"{latest_accuracy:.2%}")
+    status_cols[0].metric(tr("history_rows"), f"{len(history_df):,}")
+    status_cols[1].metric(tr("total_predictions"), f"{len(model_accuracy_df):,}")
+    status_cols[2].metric(tr("best_model"), best_model or tr("not_evaluated"))
+    status_cols[3].metric(tr("latest_accuracy"), f"{latest_accuracy:.2%}")
 
     status_cols_2 = st.columns(4)
-    status_cols_2[0].metric("Latest Processed Draw", history_df["date"].iloc[0])
-    status_cols_2[1].metric("System Last Refresh", latest_log_time)
-    status_cols_2[2].metric("Prediction Records", f"{len(prediction_history_df):,}")
-    status_cols_2[3].metric("Data Quality", quality_status)
+    status_cols_2[0].metric(tr("latest_processed_draw"), history_df["date"].iloc[0])
+    status_cols_2[1].metric(tr("system_last_refresh"), latest_log_time)
+    status_cols_2[2].metric(tr("prediction_records"), f"{len(prediction_history_df):,}")
+    status_cols_2[3].metric(tr("data_quality"), quality_status)
 
     if quality_status == "OK":
-        st.success("System status is ready. Historical statistical analysis only.")
+        st.success(tr("system_ready"))
     else:
-        st.error(f"System status needs attention: {quality_status}")
+        st.error(f"{tr('status_needs_attention')}: {quality_status}")
 
-    if st.button("Refresh System Status", type="primary"):
-        with st.spinner("Refreshing statistics, accuracy, leaderboard, and latest prediction..."):
+    if st.button(tr("refresh_system_status"), type="primary"):
+        with st.spinner(tr("refreshing_system")):
             try:
                 messages = run_auto_refresh(selected_top_n, selected_rolling_span)
-                st.success("Refresh completed. " + " ".join(messages))
+                st.success(f"{tr('refresh_completed')} " + " ".join(messages))
                 st.cache_data.clear()
                 st.rerun()
             except Exception as exc:
-                st.error("Refresh failed.")
+                st.error(tr("refresh_failed"))
                 st.code(short_traceback(exc), language="text")
 
     if not leaderboard_df.empty:
-        st.subheader("Current Leaderboard")
+        st.subheader(tr("current_leaderboard"))
         st.dataframe(leaderboard_df, use_container_width=True, hide_index=True)
 
-    st.subheader("Latest Process Log")
+    st.subheader(tr("latest_process_log"))
     st.dataframe(system_log_df, use_container_width=True, hide_index=True)
 
 with tab_backup:
-    st.subheader("Backup & Export")
-    st.info(NOTE)
+    st.subheader(tr("backup_export"))
+    st.info(tr("safety_note"))
     ensure_operational_dirs()
     backup_status = st.session_state.pop("backup_export_status", None)
     if backup_status:
@@ -1055,24 +774,24 @@ with tab_backup:
 
     storage_mb = folder_size_mb(BACKUP_DIR) + folder_size_mb(EXPORT_DIR)
     backup_cols = st.columns(4)
-    backup_cols[0].metric("Backup File Count", f"{len(backup_df):,}")
-    backup_cols[1].metric("Latest Export Time", latest_export_time())
-    backup_cols[2].metric("Storage Usage Estimate", f"{storage_mb:.2f} MB")
-    backup_cols[3].metric("Backup Retention", f"Latest {BACKUP_RETENTION_LIMIT}")
+    backup_cols[0].metric(tr("backup_file_count"), f"{len(backup_df):,}")
+    backup_cols[1].metric(tr("latest_export_time"), latest_export_time())
+    backup_cols[2].metric(tr("storage_usage_estimate"), f"{storage_mb:.2f} MB")
+    backup_cols[3].metric(tr("backup_retention"), f"{tr('latest_count')} {BACKUP_RETENTION_LIMIT}")
 
-    st.subheader("Latest Backup Table")
+    st.subheader(tr("latest_backup_table"))
     if backup_df.empty:
-        st.info("No Backup Center CSV backups yet.")
+        st.info(tr("no_backup_center_files"))
     else:
         st.dataframe(backup_df.drop(columns=["path"]), use_container_width=True, hide_index=True)
 
-    st.subheader("Create Backup")
+    st.subheader(tr("create_backup"))
     backup_buttons = st.columns(4)
     backup_map = [
-        ("Backup History", HISTORY_PATH),
-        ("Backup Accuracy", MODEL_ACCURACY_PATH),
-        ("Backup Latest Prediction", LATEST_PREDICTION_PATH),
-        ("Backup System Log", SYSTEM_LOG_PATH),
+        (tr("backup_history"), HISTORY_PATH),
+        (tr("backup_accuracy"), MODEL_ACCURACY_PATH),
+        (tr("backup_latest_prediction"), LATEST_PREDICTION_PATH),
+        (tr("backup_system_log"), SYSTEM_LOG_PATH),
     ]
     for column, (label, path) in zip(backup_buttons, backup_map):
         with column:
@@ -1080,42 +799,42 @@ with tab_backup:
                 try:
                     backup_path = create_csv_backup(path)
                     append_system_log("manual_backup", "success", f"{path} -> {backup_path}")
-                    st.session_state["backup_export_status"] = f"Backup created: {backup_path}"
+                    st.session_state["backup_export_status"] = f"{tr('manual_backup_success')}: {backup_path}"
                     st.cache_data.clear()
                     st.rerun()
                 except Exception as exc:
-                    st.session_state["backup_export_status"] = f"Error: Backup failed: {short_traceback(exc)}"
+                    st.session_state["backup_export_status"] = f"Error: {tr('manual_backup_failed')}: {short_traceback(exc)}"
                     st.rerun()
 
-    st.subheader("Export")
+    st.subheader(tr("export"))
     export_cols = st.columns(4)
     export_requests = [
-        ("Export Predictions CSV", PREDICTION_HISTORY_PATH, "predictions"),
-        ("Export Accuracy CSV", MODEL_ACCURACY_PATH, "accuracy"),
-        ("Export History CSV", HISTORY_PATH, "history"),
+        (tr("export_predictions_csv"), PREDICTION_HISTORY_PATH, "predictions"),
+        (tr("export_accuracy_csv"), MODEL_ACCURACY_PATH, "accuracy"),
+        (tr("export_history_csv"), HISTORY_PATH, "history"),
     ]
     for column, (label, path, export_label) in zip(export_cols[:3], export_requests):
         with column:
             if st.button(label):
                 try:
                     export_path = export_csv_file(path, export_label)
-                    st.session_state["backup_export_status"] = f"Export created: {export_path}"
+                    st.session_state["backup_export_status"] = f"{tr('export_created')}: {export_path}"
                     st.session_state["latest_download_path"] = str(export_path)
                     st.cache_data.clear()
                     st.rerun()
                 except Exception as exc:
-                    st.session_state["backup_export_status"] = f"Error: Export failed: {short_traceback(exc)}"
+                    st.session_state["backup_export_status"] = f"Error: {tr('export_failed')}: {short_traceback(exc)}"
                     st.rerun()
     with export_cols[3]:
-        if st.button("Export Full System ZIP"):
+        if st.button(tr("export_full_system_zip")):
             try:
                 export_path = export_full_system_zip()
-                st.session_state["backup_export_status"] = f"Full system export created: {export_path}"
+                st.session_state["backup_export_status"] = f"{tr('full_export_created')}: {export_path}"
                 st.session_state["latest_download_path"] = str(export_path)
                 st.cache_data.clear()
                 st.rerun()
             except Exception as exc:
-                st.session_state["backup_export_status"] = f"Error: Full export failed: {short_traceback(exc)}"
+                st.session_state["backup_export_status"] = f"Error: {tr('full_export_failed')}: {short_traceback(exc)}"
                 st.rerun()
 
     latest_download = st.session_state.get("latest_download_path")
@@ -1123,96 +842,96 @@ with tab_backup:
         download_path = Path(latest_download)
         if download_path.exists():
             st.download_button(
-                "Download Latest Export",
+                tr("download_latest_export"),
                 data=download_path.read_bytes(),
                 file_name=download_path.name,
                 mime="application/zip" if download_path.suffix.lower() == ".zip" else "text/csv",
             )
 
-    st.subheader("Restore Safety")
-    st.caption("Restore validates CSV structure before replacing any live file.")
+    st.subheader(tr("restore_safety"))
+    st.caption(tr("restore_caption"))
     if backup_df.empty:
-        st.info("No restore candidates available.")
+        st.info(tr("no_restore_candidates"))
     else:
         backup_names = backup_df["backup_file"].tolist()
-        selected_backup = st.selectbox("Backup file", backup_names)
+        selected_backup = st.selectbox(tr("backup_file"), backup_names)
         selected_source = backup_df.loc[backup_df["backup_file"] == selected_backup, "source_file"].iloc[0]
         target_options = list(BACKUP_TARGETS.keys())
         default_index = target_options.index(selected_source) if selected_source in target_options else 0
-        restore_target = st.selectbox("Restore target", target_options, index=default_index)
-        if st.button("Validate Backup"):
+        restore_target = st.selectbox(tr("restore_target"), target_options, index=default_index)
+        if st.button(tr("validate_backup")):
             try:
                 selected_path = BACKUP_DIR / selected_backup
                 validate_csv_for_target(selected_path, restore_target)
-                st.success("Backup structure is valid for the selected restore target.")
+                st.success(tr("backup_valid"))
             except Exception as exc:
-                st.error(f"Backup validation failed: {short_traceback(exc)}")
-        if st.button("Restore Selected Backup"):
+                st.error(f"{tr('backup_validation_failed')}: {short_traceback(exc)}")
+        if st.button(tr("restore_selected_backup")):
             try:
                 selected_path = BACKUP_DIR / selected_backup
                 pre_restore_backup = restore_backup_file(selected_path, restore_target)
                 st.session_state["backup_export_status"] = (
-                    f"Restore completed. Current file was backed up first: {pre_restore_backup}"
+                    f"{tr('restore_completed')}: {pre_restore_backup}"
                 )
                 st.cache_data.clear()
                 st.rerun()
             except Exception as exc:
-                st.session_state["backup_export_status"] = f"Error: Restore blocked: {short_traceback(exc)}"
+                st.session_state["backup_export_status"] = f"Error: {tr('restore_blocked')}: {short_traceback(exc)}"
                 st.rerun()
 
 with tab_model:
-    st.subheader("Model Comparison")
-    st.info(NOTE)
+    st.subheader(tr("model_comparison"))
+    st.info(tr("safety_note"))
     comparison_df = pd.DataFrame(model_comparison["summary"])
     trend_df = pd.DataFrame(rolling_accuracy_trend(model_comparison["details"]))
     st.dataframe(comparison_df, use_container_width=True, hide_index=True)
     hit_rate_df = comparison_df[["method", "last2_hit_rate", "3digit_hit_rate", "recent_20_round_hit_rate"]].copy()
     hit_rate_df = hit_rate_df.set_index("method")
-    st.subheader("Hit Rate Comparison")
+    st.subheader(tr("hit_rate_comparison"))
     st.plotly_chart(px.bar(hit_rate_df, barmode="group"), use_container_width=True)
     if not trend_df.empty:
-        st.subheader("Rolling Accuracy Trend")
+        st.subheader(tr("rolling_accuracy_trend"))
         chart_df = trend_df.pivot(index="draw_date", columns="method", values="rolling_hit_rate")
         st.plotly_chart(px.line(chart_df), use_container_width=True)
 
 with tab_backtest:
-    st.subheader("Backtest")
-    st.info(NOTE)
-    st.write("Backtest uses only rows before each tested draw.")
-    if st.button("Run Backtest", type="primary"):
-        with st.spinner("Running backtest..."):
+    st.subheader(tr("backtest"))
+    st.info(tr("safety_note"))
+    st.write(tr("backtest_note"))
+    if st.button(tr("run_backtest"), type="primary"):
+        with st.spinner(tr("running_backtest")):
             ok, message, result = run_backtest_export(selected_top_n, selected_rolling_span)
         if ok and result:
             st.success(message)
             st.dataframe(pd.DataFrame(result["summary"]), use_container_width=True, hide_index=True)
         else:
-            st.error("Backtest failed.")
+            st.error(tr("backtest_failed"))
             st.code(message, language="text")
     if BACKTEST_RESULT_PATH.exists():
-        st.caption(f"Last result file: {BACKTEST_RESULT_PATH}")
+        st.caption(f"{tr('last_result_file')}: {BACKTEST_RESULT_PATH}")
     if BACKTEST_DETAIL_PATH.exists():
-        st.caption(f"Detail CSV: {BACKTEST_DETAIL_PATH}")
+        st.caption(f"{tr('detail_csv')}: {BACKTEST_DETAIL_PATH}")
 
 with tab_summary:
-    st.subheader("Summary")
-    st.info(NOTE)
+    st.subheader(tr("summary"))
+    st.info(tr("safety_note"))
     recalc_success = st.session_state.pop("recalculate_success", None)
     if recalc_success:
         st.success(recalc_success)
-    if st.button("Recalculate Summary", type="primary"):
-        with st.spinner("Recalculating summary..."):
+    if st.button(tr("recalculate_summary"), type="primary"):
+        with st.spinner(tr("recalculating_summary")):
             ok, message = recalculate_summary()
         if ok:
             st.session_state["recalculate_success"] = message
             st.rerun()
         else:
-            st.error("Recalculate Summary failed.")
+            st.error(tr("recalculate_failed"))
             st.code(message, language="text")
     st.dataframe(summary_df, use_container_width=True, hide_index=True)
 
 with tab_digits:
-    st.subheader("Digit Frequency")
-    st.info(NOTE)
+    st.subheader(tr("digit_frequency"))
+    st.info(tr("safety_note"))
     chart_df = digit_df[["digit", "total"]].copy()
     chart_df["digit"] = chart_df["digit"].astype(str)
     chart_df = chart_df.set_index("digit")
@@ -1220,11 +939,11 @@ with tab_digits:
     st.dataframe(digit_df, use_container_width=True, hide_index=True)
 
 with tab_last2:
-    st.subheader("Top 20 Last 2 Digits")
-    st.info(NOTE)
+    st.subheader(tr("top_last2"))
+    st.info(tr("safety_note"))
     st.dataframe(top_last2_df, use_container_width=True, hide_index=True)
 
 with tab_3digit:
-    st.subheader("Top 20 Three-Digit Numbers")
-    st.info(NOTE)
+    st.subheader(tr("top_3digit"))
+    st.info(tr("safety_note"))
     st.dataframe(top_3digit_df, use_container_width=True, hide_index=True)
