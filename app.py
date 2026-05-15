@@ -121,10 +121,12 @@ from constants import (  # noqa: E402
     FIELD_LENGTHS,
     HISTORY_PATH,
     LATEST_PREDICTION_PATH,
+    LOTTERY_HISTORY_PATH,
     MODEL_ACCURACY_PATH,
     PREDICTION_HISTORY_PATH,
     REQUIRED_HISTORY_COLUMNS,
     SUMMARY_PATH,
+    SYSTEM_LOG_PATH,
 )
 from utils import (  # noqa: E402
     accuracy_leaderboard,

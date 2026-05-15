@@ -10,6 +10,7 @@ from predictor import MODEL_ACCURACY_COLUMNS, PREDICTION_HISTORY_COLUMNS
 BASE_DIR = Path(__file__).resolve().parent
 
 HISTORY_PATH = BASE_DIR / "data" / "lottery_history.csv"
+LOTTERY_HISTORY_PATH = HISTORY_PATH
 SUMMARY_PATH = BASE_DIR / "output" / "stat_summary.xlsx"
 ANALYZER_PATH = BASE_DIR / "analyzer.py"
 PREDICTION_HISTORY_PATH = BASE_DIR / "output" / "prediction_history.csv"
